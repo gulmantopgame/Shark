@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>Симуляция Wa-Tor: Акулы vs Рыбы</title>
+    <title>Симуляция Wa-Tor: Исправленная</title>
     <style>
         body {
             background-color: #1a1a1a;
@@ -14,26 +14,270 @@
             margin: 0;
             padding: 20px;
         }
-        h1 { margin-bottom: 10px; }
-        #stats {
-            margin-bottom: 10px;
-            font-size: 1.2rem;
-        }
+        #stats { margin-bottom: 10px; font-size: 1.2rem; }
         canvas {
             border: 2px solid #555;
-            background-color: #000; /* Цвет океана */
+            background-color: #000;
             box-shadow: 0 0 20px rgba(0,0,0,0.5);
             cursor: crosshair;
         }
-        .controls {
-            margin-top: 15px;
-            display: flex;
-            gap: 10px;
-        }
+        .controls { margin-top: 15px; display: flex; gap: 10px; }
         button {
-            padding: 10px 20px;
-            font-size: 1rem;
-            cursor: pointer;
+            padding: 10px 20px; font-size: 1rem; cursor: pointer;
+            background: #333; color: white; border: 1px solid #555; border-radius: 4px;
+        }
+        button:hover { background: #555; }
+        #error-log { color: #ff5555; margin-top: 10px; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+    <h1>Экосистема Wa-Tor (v2.0)</h1>
+    
+    <div id="stats">
+        🐟 Рыбы: <span id="fish-count" style="color:#0f0">0</span> | 
+        🦈 Акулы: <span id="shark-count" style="color:#f55">0</span> | 
+        Поколение: <span id="gen-count">0</span>
+    </div>
+
+    <canvas id="ocean" width="600" height="600"></canvas>
+    <div id="error-log"></div>
+    
+    <div style="font-size: 0.9rem; color: #aaa; margin-top: 5px;">
+        ЛКМ — добавить Рыб. ПКМ (или Shift+ЛКМ) — добавить Акул.
+    </div>
+
+    <div class="controls">
+        <button onclick="togglePause()" id="btn-pause">Старт / Пауза</button>
+        <button onclick="restartGame()">Перезапуск</button>
+        <button onclick="step()">Один шаг (Debug)</button>
+    </div>
+
+<script>
+    // --- НАСТРОЙКИ ---
+    const CELL_SIZE = 6;
+    const GRID_W = 100;
+    const GRID_H = 100;
+    
+    const FISH_BREED_TIME = 20;
+    const SHARK_BREED_TIME = 40;
+    const SHARK_START_ENERGY = 15;
+    const SHARK_EAT_ENERGY = 10;
+
+    // Глобальные переменные
+    let canvas, ctx;
+    let grid = [];
+    let isPaused = false;
+    let generation = 0;
+    let lastTime = 0;
+    const fpsInterval = 1000 / 30; // 30 FPS
+
+    window.onload = () => {
+        try {
+            canvas = document.getElementById('ocean');
+            ctx = canvas.getContext('2d');
+            
+            // Обработчики ввода
+            canvas.addEventListener('mousedown', handleInput);
+            canvas.oncontextmenu = (e) => e.preventDefault();
+
+            restartGame();
+            requestAnimationFrame(gameLoop);
+            
+        } catch (e) {
+            logError("Ошибка инициализации: " + e.message);
+        }
+    };
+
+    function logError(msg) {
+        document.getElementById('error-log').innerText = "ОШИБКА: " + msg;
+        console.error(msg);
+        isPaused = true;
+    }
+
+    function restartGame() {
+        grid = new Array(GRID_W).fill(null).map(() => new Array(GRID_H).fill(null));
+        generation = 0;
+        
+        // Заполнение
+        for (let x = 0; x < GRID_W; x++) {
+            for (let y = 0; y < GRID_H; y++) {
+                const rand = Math.random();
+                if (rand < 0.3) grid[x][y] = createFish();
+                else if (rand > 0.98) grid[x][y] = createShark();
+            }
+        }
+        draw();
+        updateStats();
+    }
+
+    // --- ИГРОВОЙ ЦИКЛ (ИСПРАВЛЕННЫЙ) ---
+    function gameLoop(timestamp) {
+        requestAnimationFrame(gameLoop);
+
+        if (isPaused) return;
+
+        const elapsed = timestamp - lastTime;
+
+        if (elapsed > fpsInterval) {
+            lastTime = timestamp - (elapsed % fpsInterval);
+            
+            try {
+                update();
+                draw();
+            } catch (e) {
+                logError("Сбой в цикле update: " + e.message);
+            }
+        }
+    }
+
+    function step() {
+        // Для ручной прокрутки, если зависло
+        isPaused = true; 
+        update(); 
+        draw();
+    }
+
+    function update() {
+        // Сброс флага движения
+        for(let x=0; x<GRID_W; x++) {
+            for(let y=0; y<GRID_H; y++) {
+                if(grid[x][y]) grid[x][y].moved = false;
+            }
+        }
+
+        // Логика перемещения
+        for (let x = 0; x < GRID_W; x++) {
+            for (let y = 0; y < GRID_H; y++) {
+                const creature = grid[x][y];
+                if (!creature || creature.moved) continue;
+
+                creature.moved = true; 
+
+                if (creature.type === 'fish') updateFish(x, y, creature);
+                else updateShark(x, y, creature);
+            }
+        }
+        generation++;
+        updateStats();
+    }
+
+    function updateFish(x, y, fish) {
+        fish.breedTimer++;
+        const neighbors = getNeighbors(x, y);
+        const empty = neighbors.filter(n => grid[n.x][n.y] === null);
+
+        if (empty.length > 0) {
+            const move = empty[Math.floor(Math.random() * empty.length)];
+            
+            if (fish.breedTimer >= FISH_BREED_TIME) {
+                fish.breedTimer = 0;
+                grid[x][y] = createFish(); 
+                grid[x][y].moved = true;
+            } else {
+                grid[x][y] = null;
+            }
+            grid[move.x][move.y] = fish;
+        }
+    }
+
+    function updateShark(x, y, shark) {
+        shark.breedTimer++;
+        shark.energy--;
+
+        if (shark.energy <= 0) {
+            grid[x][y] = null; // Смерть
+            return;
+        }
+
+        const neighbors = getNeighbors(x, y);
+        const fishSpots = neighbors.filter(n => grid[n.x][n.y] && grid[n.x][n.y].type === 'fish');
+        const emptySpots = neighbors.filter(n => grid[n.x][n.y] === null);
+
+        let target = null;
+        
+        if (fishSpots.length > 0) {
+            target = fishSpots[Math.floor(Math.random() * fishSpots.length)];
+            shark.energy += SHARK_EAT_ENERGY;
+        } else if (emptySpots.length > 0) {
+            target = emptySpots[Math.floor(Math.random() * emptySpots.length)];
+        }
+
+        if (target) {
+            if (shark.breedTimer >= SHARK_BREED_TIME) {
+                shark.breedTimer = 0;
+                grid[x][y] = createShark();
+                grid[x][y].moved = true;
+            } else {
+                grid[x][y] = null;
+            }
+            grid[target.x][target.y] = shark;
+        }
+    }
+
+    function getNeighbors(x, y) {
+        const res = [];
+        const dirs = [[0,-1], [0,1], [-1,0], [1,0]];
+        for (let d of dirs) {
+            let nx = (x + d[0] + GRID_W) % GRID_W;
+            let ny = (y + d[1] + GRID_H) % GRID_H;
+            res.push({x: nx, y: ny});
+        }
+        return res;
+    }
+
+    function createFish() { return { type: 'fish', breedTimer: Math.floor(Math.random()*FISH_BREED_TIME), moved: false }; }
+    function createShark() { return { type: 'shark', breedTimer: Math.floor(Math.random()*SHARK_BREED_TIME), energy: SHARK_START_ENERGY, moved: false }; }
+
+    function draw() {
+        ctx.fillStyle = "#000";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        let f = 0, s = 0;
+        for (let x = 0; x < GRID_W; x++) {
+            for (let y = 0; y < GRID_H; y++) {
+                const c = grid[x][y];
+                if (!c) continue;
+                
+                if (c.type === 'fish') {
+                    ctx.fillStyle = '#00ff7f';
+                    f++;
+                } else {
+                    ctx.fillStyle = (c.energy < 5) ? '#8b0000' : '#ff4040';
+                    s++;
+                }
+                ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE-1, CELL_SIZE-1);
+            }
+        }
+        // Обновляем счетчики через глобальные переменные для скорости
+        window.fishCountRef = f;
+        window.sharkCountRef = s;
+    }
+
+    function updateStats() {
+        document.getElementById('fish-count').innerText = window.fishCountRef || 0;
+        document.getElementById('shark-count').innerText = window.sharkCountRef || 0;
+        document.getElementById('gen-count').innerText = generation;
+    }
+
+    function togglePause() {
+        isPaused = !isPaused;
+    }
+
+    function handleInput(e) {
+        const rect = canvas.getBoundingClientRect();
+        const mx = Math.floor((e.clientX - rect.left) / CELL_SIZE);
+        const my = Math.floor((e.clientY - rect.top) / CELL_SIZE);
+        
+        if (mx >=0 && mx < GRID_W && my >=0 && my < GRID_H) {
+            if (e.button === 2 || e.shiftKey) grid[mx][my] = createShark();
+            else grid[mx][my] = createFish();
+            draw();
+        }
+    }
+</script>
+</body>
+</html>
             background: #333;
             color: white;
             border: 1px solid #555;
